@@ -9,6 +9,7 @@
 #include <iostream>
 #include <numeric>
 #include <algorithm>
+#include <signal.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
@@ -35,7 +36,6 @@
 #include <sstream>
 #include <sys/stat.h>
 #include <dirent.h>
-//#include <CommandAllocatorRing.h>
 
 #include "define.h"
 
@@ -45,7 +45,6 @@ using namespace std;
 /*****************************************
 * Macros definition
 ******************************************/
-#define cam_index 8 // the default device name of logitech camera is /dev/video8
 #define RESNET_str "resnet50"
 #define MOBILENET_str "mobilenet"
 #define NUM_KEYPOINTS 17
@@ -53,7 +52,8 @@ using namespace std;
 #define LOCAL_MAXIMUM_RADIUS 1
 #define MAX_POSE_DETECTIONS 10
 #define MIN_POSE_SCORE 0.25
-//#define MIN_POSE_SCORE 0.15
+#define MEASURE_TIME true
+#define PRINT_POSE_RESULT false //skip print pose result in case run real time with camera to increase performance, use it for to debug only
 
 /*****************************************
 * Global Variables
@@ -61,16 +61,19 @@ using namespace std;
 int model=RESNET50;
 std::string model_name = MOBILENET_str;
 std::string stride_name;
+//std::string image_size;
+char image_size[10];
 char output_folder[] = "output";
 float score_threshold = 0.5;
 std::map<int,std::string> label_file_map;
 std::map<int,std::string> label_chain_map;
-
-int tget_wid = 257;
-int tget_hei = 257;
+int input_image_size = 257;
+int tget_wid;
+int tget_hei;
 int image_size_x;
 int image_size_y;
 int stride = 16; // default stride is 16
+int cam_index; //device name of  camera is /dev/video<cam_index>
 int arr_size;
 int headmap_id,offset_id,bwd_id,fwd_id;
 const char* mat_out = "mat_out.jpg";
@@ -86,18 +89,7 @@ OrtStatus* status;
 float* out_data[4];// = NULL;
 
 int img_sizex, img_sizey, img_channels;
-struct timeval time1, time2,time3,time4,time5;
-double diff;
-//prepare camera
-// Create a VideoCapture object and use camera to capture the video
-VideoCapture cap(cam_index);
 cv::Mat camera_frame;
-// Default resolution of the frame is obtained.The default resolution is system dependent.
-int frame_width = cap.get(CAP_PROP_FRAME_WIDTH);
-int frame_height = cap.get(CAP_PROP_FRAME_HEIGHT);
-// Define the codec and create VideoWriter object.The output is stored in 'outcpp.avi' file.
-VideoWriter video("output/cam_output.avi",VideoWriter::fourcc('M','J','P','G'),10, Size(frame_width,frame_width));
-
 
 //std::vector<const char*> input_node_names(num_input_nodes);
 //std::vector<const char*> output_node_names(num_output_nodes);
@@ -128,7 +120,7 @@ void CheckStatus(OrtStatus* status)
 
 /*****************************************
 * Function Name : sigmoid
-* Description   : helper function for YOLO Post Processing
+* Description   : helper function for Posenet Post Processing
 * Arguments :
 * Return value  :
 ******************************************/
@@ -184,9 +176,31 @@ int loadLabelFile(std::string label_file_name,std::string label_chain_name)
     return 0;
 }
 
-/*****************************************************************************
-    FORWARD DECLRATIONS
- *****************************************************************************/
+
+/*****************************************
+* Function Name : help function
+* Description   :
+* Arguments :
+* Return value  :
+******************************************/
+int help()
+{   
+    int ret = 0;
+    printf("\nLack of argument for posenet app, Please add below input arguments: \n");
+    printf("    Model for posenet: -model <model name> \n");
+    printf("        <model name> can be mobilenet or resnet50, default is mobilenet \n");
+    printf("    Stride for posenet: -stride <stride number> \n");
+    printf("        <stride number>  can be 8 or 16 or 32, default is 16 \n");
+    printf("    Camera index for posenet: -cam_index <cam_index> \n");
+    printf("        <cam_index>  is index of device name camera: /dev/video<cam_index>  \n");
+    printf("    Input image size for posenet: -input_image_size <input_image_size> \n");
+    printf("        <input_image_size>  is size of model input image, width = heigh = input_image_size (129 or 257(default) or 513) \n");
+    printf("Example command: ./poseNet_camera -model mobilenet -stride 16 -cam_index 8 -input_image_size 257\n");
+
+    return ret;
+}
+
+
 /*****************************************
 * Function Name : parse_argument
 * Description   :
@@ -197,12 +211,21 @@ int parse_argument(int argc, char* argv[])
 {   
     int ret = 0;
 	int index = 1;
+    if(argc == 1)
+    {
+        help();
+        return 1;
+    }
 
 	for (index = 1; index < argc; index++) {
 		if (!strcmp("-model", argv[index])) {
 			model_name = argv[index+1];
 		} else if (!strcmp("-stride", argv[index])) {
 			stride = atoi(argv[index+1]);
+		} else if (!strcmp("-cam_index", argv[index])) {
+			cam_index = atoi(argv[index+1]);
+		} else if (!strcmp("-input_image_size", argv[index])) {
+			input_image_size = atoi(argv[index+1]);
         } else {
         }
     }
@@ -214,7 +237,6 @@ int prepare_environment()
 {
     int ret = 0;
     
-
     // process some input argument
     if (!strcmp(model_name.c_str(), RESNET_str)) {
         model = RESNET50;
@@ -231,19 +253,17 @@ int prepare_environment()
     else if(stride == 8) stride_name = "_stride8";
     else if(stride == 32) stride_name = "_stride32";
 
+    sprintf(image_size,"%d",input_image_size);
+
+    tget_hei = input_image_size;
+    tget_wid = input_image_size;
+
     DIR* dir = opendir("output");
     if (!dir) ret =mkdir("output", 0777);
     
     if(loadLabelFile(part_names_file,chain_names_file) != 0)
     {
         fprintf(stderr,"Fail to open or process file %s, %s\n",part_names_file.c_str(),chain_names_file.c_str());
-        return -1;
-    }
-
-    // Check if camera opened successfully
-    if(!cap.isOpened())
-    {
-        cout << "Error opening video stream" << endl;
         return -1;
     }
 
@@ -265,7 +285,7 @@ void prepare_ONNX_Runtime() {
 
     //Config : model
     //std::string onnx_model_name = model_name + "-PoseNet.onnx";
-    std::string onnx_model_name = model_name + stride_name + ".onnx";
+    std::string onnx_model_name = model_name + stride_name + "_imagesize" + image_size + ".onnx";
     std::string onnx_model_path = "./models/" + onnx_model_name;
 
     //ONNX runtime load model
@@ -273,13 +293,11 @@ void prepare_ONNX_Runtime() {
     printf("Start Loading Model %s\n", model_name.c_str());
 }
 
-int preprocess_input() {
+int preprocess_input(VideoCapture cap) {
     int ret=0;
 
-    //gettimeofday(&time1, nullptr);
-    cv::Mat img_ori;// = cv::imread(input_folder_file, cv::IMREAD_COLOR);
+    cv::Mat img_ori;
     cap >> img_ori;
-    //gettimeofday(&time5, nullptr);
     /*
     // If the frame is empty, break immediately
     if (img_ori.empty())
@@ -290,21 +308,12 @@ int preprocess_input() {
     */
 
     int img_size_max;
-    //printf("img_ori.rows: %d\n", img_ori.rows);
-    //printf("img_ori.cols: %d\n", img_ori.cols);
     if(img_ori.rows > img_ori.cols) img_size_max = img_ori.rows;
     else img_size_max = img_ori.cols;
 
     cv::Mat _img(img_size_max,img_size_max, CV_8UC3, Scalar(128,128,128));
     img_ori.copyTo(_img(cv::Rect((img_size_max - img_ori.cols)/2,(img_size_max - img_ori.rows)/2,img_ori.cols, img_ori.rows)));
     camera_frame = _img.clone();
-    /*
-    gettimeofday(&time2, nullptr);
-    diff = timedifference_msec(time1,time2);
-    printf("diff1 Time: %.3f msec\n", diff);
-    diff = timedifference_msec(time1,time5);
-    printf("diff0 Time: %.3f msec\n", diff);
-    */
 
     // process image
     cv::Mat img;
@@ -323,11 +332,6 @@ int preprocess_input() {
     std::vector<float> input_tensor_values(input_tensor_size);
 
     arr_size = ((tget_wid - 1) / stride) + 1;
-    /*
-    gettimeofday(&time3, nullptr);
-    diff = timedifference_msec(time2,time3);
-    printf("diff2 Time: %.3f msec\n", diff);
-    */
 /*
     //for write image
     FILE *fp_image;
@@ -475,7 +479,7 @@ int preprocess_input() {
     return ret;
 }
 
-int postprocess() 
+int postprocess(VideoWriter video) 
 {
     int ret = 0;
     /*
@@ -978,7 +982,7 @@ int postprocess()
         if(pose_count >= MAX_POSE_DETECTIONS) break;
     }
     
-/*
+#if PRINT_POSE_RESULT == true
     //disable print result in case run real time with camera
     for(int pose_id=0; pose_id < pose_count; pose_id++)
     {
@@ -990,7 +994,7 @@ int postprocess()
             printf("score = %f, coord = [%f %f]\n",  pose_keypoint_scores[pose_id][keypoint_id], pose_keypoint_coords[pose_id][keypoint_id][0]*scale, pose_keypoint_coords[pose_id][keypoint_id][1]*scale);
         }
     }
-*/
+#endif
     //printf("finish calculate poses\n");
     for(int pose_id=0; pose_id < pose_count; pose_id++)
     {
@@ -1080,25 +1084,19 @@ int postprocess()
 
 void run_model(){
     // RUN: score model & input tensor, get back output tensor
-    struct timeval time1, time2,time3,time4,time5,time6;
-    double diff;
     //gettimeofday(&time1, nullptr);
     std::vector<OrtValue *> output_tensor(4);
-    //gettimeofday(&time2, nullptr);
     output_tensor[0] = NULL;
     output_tensor[1] = NULL;
     output_tensor[2] = NULL;
     output_tensor[3] = NULL;
     int is_tensor;
-    //gettimeofday(&time3, nullptr);
 
     // check parameter
     CheckStatus(g_ort->IsTensor(input_tensor[0], &is_tensor));
     assert(is_tensor);
-    //gettimeofday(&time4, nullptr);
 
     CheckStatus(g_ort->Run(session, NULL, input_node_names.data(), input_tensor.data(), num_input_nodes, output_node_names.data(), num_output_nodes, output_tensor.data()));
-    //gettimeofday(&time5, nullptr);
     for (int i = 0; i <= 3; i++)
     {
         CheckStatus(g_ort->IsTensor(output_tensor[i],&is_tensor));
@@ -1107,21 +1105,7 @@ void run_model(){
         // Get pointer to output tensor float values
         g_ort->GetTensorMutableData(output_tensor[i], (void**)&out_data[i]);        
     }
-    /*
-    gettimeofday(&time6, nullptr);
-    diff = timedifference_msec(time1,time2);
-    printf("diff1: %.3f msec\n", diff);
-    diff = timedifference_msec(time2,time3);
-    printf("diff2: %.3f msec\n", diff);
-    diff = timedifference_msec(time3,time4);
-    printf("diff3: %.3f msec\n", diff);
-    diff = timedifference_msec(time4,time5);
-    printf("diff4: %.3f msec\n", diff);
-    diff = timedifference_msec(time5,time6);
-    printf("diff5: %.3f msec\n", diff);
-    */
 }
-
 
 int main(int argc, char* argv[])
 {
@@ -1129,47 +1113,57 @@ int main(int argc, char* argv[])
     if(ret = parse_argument(argc, argv)) {
         return ret;
     }
-    struct timeval start_pre, stop_pre, start_post, stop_post, start_run_model, stop_run_model;
-    double diff_pre, diff_post, diff_run_model, sum_time;
 
     prepare_environment();
 
+    struct timeval time1, time2, time3, time4;
+    double duration;
+
+    //prepare camera
+    // Create a VideoCapture object and use camera to capture the video
+    VideoCapture cap(cam_index);
+    // Check if camera opened successfully
+    if(!cap.isOpened())
+    {
+        cout << "Error opening video stream" << endl;
+        return -1;
+    }
+    // Default resolution of the frame is obtained.The default resolution is system dependent.
+    int full_size_video = cap.get(CAP_PROP_FRAME_WIDTH) > cap.get(CAP_PROP_FRAME_HEIGHT) ? cap.get(CAP_PROP_FRAME_WIDTH) : cap.get(CAP_PROP_FRAME_HEIGHT);
+    // Define the codec and create VideoWriter object.The output is stored in 'outcpp.avi' file.
+    VideoWriter video("output/cam_output.avi",VideoWriter::fourcc('M','J','P','G'),10, Size(full_size_video,full_size_video));
+    
     // setup ONNX runtime env
     prepare_ONNX_Runtime();
-    int count=0;
+    
     while(1)
     {
         // preprocessing
-        gettimeofday(&start_pre, nullptr);
-        preprocess_input();
-        gettimeofday(&stop_pre, nullptr);
+        gettimeofday(&time1, nullptr);
+        preprocess_input(cap);
 
         // run inference
-        gettimeofday(&start_run_model, nullptr);
+        gettimeofday(&time2, nullptr);
         run_model();
-        gettimeofday(&stop_run_model, nullptr);
 
         // postprocessing
-        gettimeofday(&start_post, nullptr);
-        postprocess();
-        gettimeofday(&stop_post, nullptr);
+        gettimeofday(&time3, nullptr);
+        postprocess(video);
+        gettimeofday(&time4, nullptr);
 
-        // Press  ESC on keyboard to  exit
-        //char c = (char)waitKey(1);
-        //if( c == 27 )
-        //break;
-        
-        diff_pre = timedifference_msec(start_pre,stop_pre);
-        diff_run_model = timedifference_msec(start_run_model,stop_run_model);
-        diff_post = timedifference_msec(start_post,stop_post);
-        sum_time = timedifference_msec(start_pre,stop_post);
-        printf("preprocessing Time: %.3f msec\n", diff_pre);
-        printf("run model Time: %.3f msec\n", diff_run_model);
-        printf("postprocessing Time: %.3f msec\n", diff_post);
-        printf("sum_time: %.3f msec\n", sum_time);
-        printf("num frame per second: %.3f fps\n", 1000/sum_time);
+        #if MEASURE_TIME == true
+        duration = timedifference_msec(time1,time2);
+        printf("preprocessing Time: %.3f msec\n", duration);
+        duration = timedifference_msec(time2,time3);
+        printf("run model Time: %.3f msec\n", duration);
+        duration = timedifference_msec(time3,time4);
+        printf("postprocessing Time: %.3f msec\n", duration);
+        duration = timedifference_msec(time1,time4);
+        printf("total time of 1 fram processing: %.3f msec\n", duration);
+        printf("number of frame per second: %.3f fps\n", 1000/duration);
         printf("\n");
-        
+        #endif
+
     }
     // When everything done, release the video capture and write object
     cap.release();
