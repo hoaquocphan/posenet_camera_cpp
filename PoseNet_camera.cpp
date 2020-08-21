@@ -63,7 +63,6 @@ std::string model_name = MOBILENET_str;
 std::string stride_name;
 //std::string image_size;
 char image_size[10];
-char output_folder[] = "output";
 float score_threshold = 0.5;
 std::map<int,std::string> label_file_map;
 std::map<int,std::string> label_chain_map;
@@ -73,7 +72,7 @@ int tget_hei;
 int image_size_x;
 int image_size_y;
 int stride = 16; // default stride is 16
-int cam_index; //device name of  camera is /dev/video<cam_index>
+int cam_index = 8; //device name of  camera is /dev/video<cam_index>
 int arr_size;
 int headmap_id,offset_id,bwd_id,fwd_id;
 const char* mat_out = "mat_out.jpg";
@@ -186,7 +185,7 @@ int loadLabelFile(std::string label_file_name,std::string label_chain_name)
 int help()
 {   
     int ret = 0;
-    printf("\nLack of argument for posenet app, Please add below input arguments: \n");
+    printf("\nTo run posenet app, Please add below input arguments: \n");
     printf("    Model for posenet: -model <model name> \n");
     printf("        <model name> can be mobilenet or resnet50, default is mobilenet \n");
     printf("    Stride for posenet: -stride <stride number> \n");
@@ -211,12 +210,7 @@ int parse_argument(int argc, char* argv[])
 {   
     int ret = 0;
 	int index = 1;
-    if(argc == 1)
-    {
-        help();
-        return 1;
-    }
-
+    printf("\nRun below command to get instruction: ./poseNet_camera -help\n");
 	for (index = 1; index < argc; index++) {
 		if (!strcmp("-model", argv[index])) {
 			model_name = argv[index+1];
@@ -226,6 +220,9 @@ int parse_argument(int argc, char* argv[])
 			cam_index = atoi(argv[index+1]);
 		} else if (!strcmp("-input_image_size", argv[index])) {
 			input_image_size = atoi(argv[index+1]);
+		} else if (!strcmp("-help", argv[index])) {
+			help();
+            return 1;
         } else {
         }
     }
@@ -1130,7 +1127,7 @@ int main(int argc, char* argv[])
     }
     // Default resolution of the frame is obtained.The default resolution is system dependent.
     int full_size_video = cap.get(CAP_PROP_FRAME_WIDTH) > cap.get(CAP_PROP_FRAME_HEIGHT) ? cap.get(CAP_PROP_FRAME_WIDTH) : cap.get(CAP_PROP_FRAME_HEIGHT);
-    // Define the codec and create VideoWriter object.The output is stored in 'outcpp.avi' file.
+    // Define the codec and create VideoWriter object.The output is stored in 'cam_output.avi' file.
     VideoWriter video("output/cam_output.avi",VideoWriter::fourcc('M','J','P','G'),10, Size(full_size_video,full_size_video));
     
     // setup ONNX runtime env
