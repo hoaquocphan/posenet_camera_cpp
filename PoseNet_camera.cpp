@@ -52,8 +52,11 @@ using namespace std;
 #define LOCAL_MAXIMUM_RADIUS 1
 #define MAX_POSE_DETECTIONS 10
 #define MIN_POSE_SCORE 0.25
-#define MEASURE_TIME true
-#define PRINT_POSE_RESULT false //skip print pose result in case run real time with camera to increase performance, use it for to debug only
+#define MODEL_01 1   // this model has input shape (1, 3, 129, 129)
+#define MODEL_02 2   // this model has input shape (1, 3, 257, 257)
+#define MODEL_03 3   // this model has input shape (1, 3, 513, 513)
+#define DISABLE 0
+#define ENABLE 1
 
 /*****************************************
 * Global Variables
@@ -61,7 +64,6 @@ using namespace std;
 int model=RESNET50;
 std::string model_name = MOBILENET_str;
 std::string stride_name;
-//std::string image_size;
 char image_size[10];
 float score_threshold = 0.5;
 std::map<int,std::string> label_file_map;
@@ -74,6 +76,7 @@ int image_size_y;
 int stride = 16; // default stride is 16
 int cam_index = 8; //device name of  camera is /dev/video<cam_index>
 int arr_size;
+int model_index = 2;
 int headmap_id,offset_id,bwd_id,fwd_id;
 const char* mat_out = "mat_out.jpg";
 std::string part_names_file("part_names.txt");
@@ -86,12 +89,11 @@ size_t num_input_nodes;
 size_t num_output_nodes;
 OrtStatus* status;
 float* out_data[4];// = NULL;
-
+int measure_time = 0;
+int print_poses_score = 0; //skip print pose result in case run real time with camera to increase performance, use it for to debug only
 int img_sizex, img_sizey, img_channels;
 cv::Mat camera_frame;
 
-//std::vector<const char*> input_node_names(num_input_nodes);
-//std::vector<const char*> output_node_names(num_output_nodes);
 std::vector<const char*> input_node_names(1);
 std::vector<const char*> output_node_names(4);
 std::vector<int64_t> input_node_dims_input;
@@ -108,7 +110,6 @@ struct S_Pixel
 
 void CheckStatus(OrtStatus* status)
 {
-    //printf("CheckStatus\n");
     if (status != NULL) {
         const char* msg = g_ort->GetErrorMessage(status);
         fprintf(stderr, "%s\n", msg);
@@ -185,20 +186,47 @@ int loadLabelFile(std::string label_file_name,std::string label_chain_name)
 int help()
 {   
     int ret = 0;
-    printf("\nTo run posenet app, Please add below input arguments: \n");
+    printf("\n");
+    printf("To run posenet app, Please add below input arguments: \n");
     printf("    Model for posenet: -model <model name> \n");
     printf("        <model name> can be mobilenet or resnet50, default is mobilenet \n");
-    printf("    Stride for posenet: -stride <stride number> \n");
-    printf("        <stride number>  can be 8 or 16 or 32, default is 16 \n");
+    printf("    Model index for posenet: -model_index <model index> \n");
+    printf("        <model index>  can be 1 or 2 or 3, default is 2 \n");
     printf("    Camera index for posenet: -cam_index <cam_index> \n");
     printf("        <cam_index>  is index of device name camera: /dev/video<cam_index>  \n");
-    printf("    Input image size for posenet: -input_image_size <input_image_size> \n");
-    printf("        <input_image_size>  is size of model input image, width = heigh = input_image_size (129 or 257(default) or 513) \n");
-    printf("Example command: ./poseNet_camera -model mobilenet -stride 16 -cam_index 8 -input_image_size 257\n");
+    printf("    Input image size for posenet: -measure_time <measure_time> \n");
+    printf("        <measure_time>  to enable/disable the measure time function. 0 for disable, 1 for enable \n");
+    printf("    Input image size for posenet: -print_poses_score <print_poses_score> \n");
+    printf("        <print_poses_score>  to enable/disable the print pose score function. 0 for disable, 1 for enable \n");
+    printf("Example command: ./poseNet_camera -model mobilenet -model_index 2 -cam_index 8 -measure_time 0 -print_poses_score 0\n");
+    printf("\n");
 
     return ret;
 }
+/*****************************************
+* Function Name : print information function
+* Description   :
+* Arguments :
+* Return value  :
+******************************************/
+int print_info()
+{   
+    int ret = 0;
+    printf("\n");
+    printf("There are 3 model of mobilenet: \n");
+    printf("Model 1:\n");
+    printf("    stride: 16 \n");
+    printf("    input image size: 129x129 \n");
+    printf("Model 2:\n");
+    printf("    stride: 16 \n");
+    printf("    input image size: 257x257 \n");
+    printf("Model 3:\n");
+    printf("    stride: 16 \n");
+    printf("    input image size: 513x513 \n");
+    printf("\n");
 
+    return ret;
+}
 
 /*****************************************
 * Function Name : parse_argument
@@ -210,23 +238,35 @@ int parse_argument(int argc, char* argv[])
 {   
     int ret = 0;
 	int index = 1;
-    printf("\nRun below command to get instruction: ./poseNet_camera -help\n");
+    if(argc == 1)
+    {
+        printf("\n");
+        printf("Lack of argument for posenet app. \n");
+        printf("To get instruction, Run command: ./poseNet_camera -h\n");
+        printf("To get model information, Run command: ./poseNet_camera -a\n");
+        printf("\n");
+        return 1;
+    }
 	for (index = 1; index < argc; index++) {
 		if (!strcmp("-model", argv[index])) {
 			model_name = argv[index+1];
-		} else if (!strcmp("-stride", argv[index])) {
-			stride = atoi(argv[index+1]);
+		} else if (!strcmp("-model_index", argv[index])) {
+			model_index = atoi(argv[index+1]);
 		} else if (!strcmp("-cam_index", argv[index])) {
 			cam_index = atoi(argv[index+1]);
-		} else if (!strcmp("-input_image_size", argv[index])) {
-			input_image_size = atoi(argv[index+1]);
-		} else if (!strcmp("-help", argv[index])) {
+		} else if (!strcmp("-measure_time", argv[index])) {
+			measure_time = atoi(argv[index+1]);
+		} else if (!strcmp("-print_poses_score", argv[index])) {
+			print_poses_score = atoi(argv[index+1]);
+		} else if (!strcmp("-h", argv[index])) {
 			help();
+            return 1;
+		} else if (!strcmp("-a", argv[index])) {
+			print_info();
             return 1;
         } else {
         }
     }
-
     return ret;
 }
 
@@ -237,15 +277,47 @@ int prepare_environment()
     // process some input argument
     if (!strcmp(model_name.c_str(), RESNET_str)) {
         model = RESNET50;
+        printf("Currently, posenet app doesn't support Resnet architecture\n");
+        return 1;
     }
     else if (!strcmp(model_name.c_str(), MOBILENET_str)) {
         model = MOBILENET;
+        switch(model_index)
+        {
+            case MODEL_01:
+                stride = 16;
+                input_image_size = 129;
+            break;
+            case MODEL_02:
+                stride = 16;
+                input_image_size = 257;
+            break;
+            case MODEL_03:
+                stride = 16;
+                input_image_size = 513;
+            break;
+            default:
+                printf("Currently, posenet app doesn't support model %d\n",model_index);
+                return 1;
+            break;
+        }
     }
     else {
         printf("The architecture is not supported\n");
         ret = -1;
     }
 
+    if((measure_time != DISABLE) && (measure_time != ENABLE))
+    {
+        printf("Wrong input of measure_time\n");
+        return 1;
+    }
+    if((print_poses_score != DISABLE) && (print_poses_score != ENABLE))
+    {
+        printf("Wrong input of print_poses_score\n");
+        return 1;
+    }
+    
     if(stride == 16) stride_name = "_stride16";
     else if(stride == 8) stride_name = "_stride8";
     else if(stride == 32) stride_name = "_stride32";
@@ -273,15 +345,11 @@ void valid_resolution(int width, int height, int *target_width, int *target_heig
     *target_height = (height / stride) * stride +1;
 }
 void prepare_ONNX_Runtime() {
-    //ONNX runtime: Necessary
     CheckStatus(g_ort->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "test", &env));
-
-    //ONNX runtime: Necessary
     g_ort->CreateSessionOptions(&session_options);
     g_ort->SetInterOpNumThreads(session_options, 2); //Multi-core
 
     //Config : model
-    //std::string onnx_model_name = model_name + "-PoseNet.onnx";
     std::string onnx_model_name = model_name + stride_name + "_imagesize" + image_size + ".onnx";
     std::string onnx_model_path = "./models/" + onnx_model_name;
 
@@ -295,14 +363,6 @@ int preprocess_input(VideoCapture cap) {
 
     cv::Mat img_ori;
     cap >> img_ori;
-    /*
-    // If the frame is empty, break immediately
-    if (img_ori.empty())
-    {
-        printf("cap is empty");
-        ret=-1;
-    }
-    */
 
     int img_size_max;
     if(img_ori.rows > img_ori.cols) img_size_max = img_ori.rows;
@@ -314,9 +374,6 @@ int preprocess_input(VideoCapture cap) {
 
     // process image
     cv::Mat img;
-    // create a copy image to output_folder_file
-    //cv::imwrite(output_folder_file, _img);
-    //valid_resolution(_img.cols, _img.rows, (int*) &tget_wid, (int*) &tget_hei); 
     cv::resize(_img, img, cv::Size(tget_wid, tget_hei), 0, 0, CV_INTER_LINEAR);
     //cv::cvtColor(img, img, cv::COLOR_BGR2RGB);
     cv::imwrite(mat_out, img);
@@ -329,21 +386,6 @@ int preprocess_input(VideoCapture cap) {
     std::vector<float> input_tensor_values(input_tensor_size);
 
     arr_size = ((tget_wid - 1) / stride) + 1;
-/*
-    //for write image
-    FILE *fp_image;
-    fp_image = fopen("output/image.txt", "w");
-    //for read image
-    FILE *fp_image_read;
-    fp_image_read = fopen("output_data/image.txt", "r");
-    int x=0;
-    float num;
-    while (fscanf(fp_image_read, "%f", &num)!=EOF)
-    {
-        input_tensor_values[x] = num;
-        x++;
-    }
-*/
     if(model == MOBILENET)
     {
         int offs = 0;
@@ -352,9 +394,6 @@ int preprocess_input(VideoCapture cap) {
                 for (int x = 0; x < img_sizex; x++, offs++){
                     const int val(imgPixels[y * img_sizex + x].RGBA[c]);
                     input_tensor_values[offs] = ((float)val)*2/255 - 1; // for mobilenet
-                    //printf("input_tensor_values[offs]: %f \n",input_tensor_values[offs]);
-                    //fprintf(fp_image, "%f\n", ((float)val)*2/255 - 1); // save output data to txt file
-                    //fprintf(fp_image, "%f\n", input_tensor_values[offs]); // save output data to txt file
                 }
             }
         }
@@ -373,9 +412,6 @@ int preprocess_input(VideoCapture cap) {
         }
     }
 
-    //fclose(fp_image_read);
-    //fclose(fp_image);
-
     // create input tensor object from data values
     OrtMemoryInfo* memory_info;
     CheckStatus(g_ort->CreateCpuMemoryInfo(OrtArenaAllocator, OrtMemTypeDefault, &memory_info));
@@ -385,9 +421,6 @@ int preprocess_input(VideoCapture cap) {
     CheckStatus(g_ort->GetAllocatorWithDefaultOptions(&allocator));
     status = g_ort->SessionGetInputCount(session, &num_input_nodes);
     status = g_ort->SessionGetOutputCount(session, &num_output_nodes);
-    //printf("\nCurrent Model is %s\n",model_name.c_str());
-    //printf("Number of inputs = %zu\n", num_input_nodes);
-    //printf("Number of outputs = %zu\n", num_output_nodes);
 
     // print input tensor type before setting value 
     for (size_t i = 0; i < num_input_nodes; i++){
@@ -469,43 +502,12 @@ int preprocess_input(VideoCapture cap) {
     assert(is_tensor);
     g_ort->ReleaseMemoryInfo(memory_info);
 
-    //gettimeofday(&time4, nullptr);
-    //diff = timedifference_msec(time3,time4);
-    //printf("diff3 Time: %.3f msec\n", diff);
-
     return ret;
 }
 
 int postprocess(VideoWriter video) 
 {
     int ret = 0;
-    /*
-    float max_score=0;
-    for(int i=0; i< arr_size*arr_size*NUM_KEYPOINTS; i++)
-    {
-        //out_data[0][i] = sigmoid(out_data[0][i]);
-        //printf("output 0: %f\n", out_data[0][i]);
-        if(max_score<out_data[0][i]) max_score = out_data[0][i];
-    }
-    for(int i=0; i< 20; i++)
-    {
-        printf("output 0: %f\n", out_data[0][i]);
-    }
-    for(int i=0; i< 20; i++)
-    {
-        printf("output 1: %f\n", out_data[1][i]);
-    }
-    for(int i=0; i< 20; i++)
-    {
-        printf("output 2: %f\n", out_data[2][i]);
-    }
-    for(int i=0; i< 20; i++)
-    {
-        printf("output 3: %f\n", out_data[3][i]);
-    }
-    
-   printf("max_score: %f\n", max_score);
-*/
     int lmd = 2 * LOCAL_MAXIMUM_RADIUS + 1;
     float arr_heatmap[arr_size][arr_size][NUM_KEYPOINTS];
     float arr_heatmap_temp[NUM_KEYPOINTS][arr_size][arr_size];
@@ -557,24 +559,8 @@ int postprocess(VideoWriter video)
     cv::Scalar colorCircle(255,255,255);
     cv::Scalar colorLine(255, 255, 0);
 
-    //cv::Mat img = cv::imread(output_folder_file, cv::IMREAD_COLOR);
-    
     float scale = float(camera_frame.cols) / float(tget_wid);
     
-    
-    //printf("start postprocess\n");
-    //printf("scale %f\n", scale);
-    /*
-    // save output data to txt file
-    FILE *fp_heatmap;
-    FILE *fp_offset;
-    FILE *fp_fwd;
-    FILE *fp_bwd;
-    fp_heatmap = fopen("output/heatmap_result.txt", "w");
-    fp_offset = fopen("output/offsets_result.txt", "w");
-    fp_fwd = fopen("output/displacement_fwd_result.txt", "w");
-    fp_bwd = fopen("output/displacement_bwd_result.txt", "w");
-    */
 
     for (int a = 0; a < NUM_KEYPOINTS; a++)
     {
@@ -583,10 +569,6 @@ int postprocess(VideoWriter video)
             for (int c = 0; c < arr_size; c++,out_data_index++)
             {
                 arr_heatmap_temp[a][b][c] = sigmoid(out_data[headmap_id][out_data_index]);
-                //fprintf(fp_heatmap, "%f\n", out_data[headmap_id][out_data_index]);
-                //fprintf(fp_heatmap, "%f\n", out_data[headmap_id][out_data_index]); // save output data to txt file
-                //fprintf(fp_heatmap, "%f\n", arr_heatmap[a][b][c]); // save output data to txt file
-                //printf("Value of n=%f \n", arr_heatmap[a][b][c]);
             }
         }
     }
@@ -598,8 +580,6 @@ int postprocess(VideoWriter video)
             for (int c = 0; c < NUM_KEYPOINTS; c++)
             {
                 arr_heatmap[a][b][c] =  arr_heatmap_temp[c][a][b];
-                //fprintf(fp_offset, "%f\n", arr_offset[a][b][c]); // save output data to txt file
-                //printf("Value of n=%f \n", arr_offset[a][b][c]);
             }
         }
     }
@@ -611,10 +591,7 @@ int postprocess(VideoWriter video)
         {
             for (int c = 0; c < arr_size; c++,out_data_index++)
             {
-                //arr_offset[a][b][c] = out_data[offset_id][out_data_index];
                 arr_offset_temp[a][b][c] = out_data[offset_id][out_data_index];
-                //fprintf(fp_offset, "%f\n", out_data[offset_id][out_data_index]); // save output data to txt file
-                //printf("Value of n=%f \n", arr_offset[a][b][c]);
             }
         }
     }
@@ -626,8 +603,6 @@ int postprocess(VideoWriter video)
             for (int c = 0; c < NUM_KEYPOINTS*2; c++)
             {
                 arr_offset[a][b][c] =  arr_offset_temp[c][a][b];
-                //fprintf(fp_offset, "%f\n", arr_offset[a][b][c]); // save output data to txt file
-                //printf("Value of n=%f \n", arr_offset[a][b][c]);
             }
         }
     }
@@ -640,8 +615,6 @@ int postprocess(VideoWriter video)
             for (int c = 0; c < arr_size; c++,out_data_index++)
             {
                 arr_fwd_temp[a][b][c] = out_data[fwd_id][out_data_index];
-                //fprintf(fp_fwd, "%f\n", out_data[fwd_id][out_data_index]); // save output data to txt file
-                //printf("Value of n=%f \n", arr_fwd[a][b][c]);
             }
         }
     }
@@ -653,8 +626,6 @@ int postprocess(VideoWriter video)
             for (int c = 0; c < NUM_CHAIN*2; c++)
             {
                 arr_fwd[a][b][c] =  arr_fwd_temp[c][a][b];
-                //fprintf(fp_fwd, "%f\n", arr_fwd[a][b][c]); // save output data to txt file
-                //printf("Value of n=%f \n", arr_offset[a][b][c]);
             }
         }
     }
@@ -667,8 +638,6 @@ int postprocess(VideoWriter video)
             for (int c = 0; c < arr_size; c++,out_data_index++)
             {
                 arr_bwd_temp[a][b][c] = out_data[bwd_id][out_data_index];
-                //fprintf(fp_bwd, "%f\n", out_data[bwd_id][out_data_index]); // save output data to txt file
-                //printf("Value of n=%f \n", arr_bwd[a][b][c]);
             }
         }
     }
@@ -680,20 +649,10 @@ int postprocess(VideoWriter video)
             for (int c = 0; c < NUM_CHAIN*2; c++)
             {
                 arr_bwd[a][b][c] =  arr_bwd_temp[c][a][b];
-                //fprintf(fp_bwd, "%f\n", arr_bwd[a][b][c]); // save output data to txt file
-                //printf("Value of n=%f \n", arr_offset[a][b][c]);
             }
         }
     }
 
-    /*
-    // save output data to txt file
-    fclose(fp_heatmap);
-    fclose(fp_offset);
-    fclose(fp_fwd);
-    fclose(fp_bwd);
-    */
-    //printf("finish transpose\n");
     for (int  c = 0; c < NUM_KEYPOINTS; c++)
     {
         int part_num_key=0;
@@ -705,8 +664,6 @@ int postprocess(VideoWriter video)
                 else 
                 {
                     kp_scores[a][b] = arr_heatmap[a][b][c];
-                    //printf("c=%d \n", c);
-                    //printf("kp_scores[a][b]=%f \n", kp_scores[a][b]);
                 }
             }
         }
@@ -748,8 +705,6 @@ int postprocess(VideoWriter video)
                     parts[part_num][1] = c;   // keypoint_id
                     parts[part_num][2] = b;
                     parts[part_num][3] = a;
-                    //printf("parts[part_num][1]=%f \n", parts[part_num][1]);
-                    //printf("parts[part_num][0]=%f \n", parts[part_num][0]);
                     part_num++;
                     part_num_key++;
                 }
@@ -788,7 +743,6 @@ int postprocess(VideoWriter video)
             if(finish_convert == true) break;
         }
     }
-    //printf("finish calculate part\n");
 
     for (int part_index = 0; part_index < part_num; part_index++)
     {
@@ -854,7 +808,6 @@ int postprocess(VideoWriter video)
                 else if(source_keypoint_indices[0] > ( arr_size - 1)) source_keypoint_indices[0] = arr_size - 1;
                 if(source_keypoint_indices[1] < 0) source_keypoint_indices[1] = 0;
                 else if(source_keypoint_indices[1] > (arr_size - 1)) source_keypoint_indices[1] = arr_size - 1;
-                //printf("source_keypoint_indices: [%f %f] \n",  source_keypoint_indices[0],source_keypoint_indices[1]);
                 displaced_point[0] = instance_keypoint_coords[source_keypoint_id][0] + arr_bwd[int(source_keypoint_indices[0])][int(source_keypoint_indices[1])][edge];
                 displaced_point[1] = instance_keypoint_coords[source_keypoint_id][1] + arr_bwd[int(source_keypoint_indices[0])][int(source_keypoint_indices[1])][edge+NUM_CHAIN];
 
@@ -864,12 +817,9 @@ int postprocess(VideoWriter video)
                 else if(displaced_point_indices[0] > (arr_size - 1)) displaced_point_indices[0] = arr_size - 1;
                 if(displaced_point_indices[1] < 0) displaced_point_indices[1] = 0;
                 else if(displaced_point_indices[1] > (arr_size - 1)) displaced_point_indices[1] = arr_size - 1;
-                //printf("displaced_point_indices: [%f %f] \n",  displaced_point_indices[0],displaced_point_indices[1]);
                 score = arr_heatmap[int(displaced_point_indices[0])][int(displaced_point_indices[1])][target_keypoint_id];
                 image_coord[0] = displaced_point_indices[0] * float(stride) + arr_offset[int(displaced_point_indices[0])][int(displaced_point_indices[1])][target_keypoint_id]; 
                 image_coord[1] = displaced_point_indices[1] * float(stride) + arr_offset[int(displaced_point_indices[0])][int(displaced_point_indices[1])][target_keypoint_id + NUM_KEYPOINTS];
-                //printf("score: %f\n",  score);
-                //printf("image_coord: [%f %f] \n",  image_coord[0],image_coord[1]);
                 instance_keypoint_scores[target_keypoint_id] = score;
                 instance_keypoint_coords[target_keypoint_id][0] = image_coord[0];
                 instance_keypoint_coords[target_keypoint_id][1] = image_coord[1];
@@ -901,7 +851,6 @@ int postprocess(VideoWriter video)
                 else if(source_keypoint_indices[0] > ( arr_size - 1)) source_keypoint_indices[0] = arr_size - 1;
                 if(source_keypoint_indices[1] < 0) source_keypoint_indices[1] = 0;
                 else if(source_keypoint_indices[1] > (arr_size - 1)) source_keypoint_indices[1] = arr_size - 1;
-                //printf("source_keypoint_indices: [%f %f] \n",  source_keypoint_indices[0],source_keypoint_indices[1]);
                 displaced_point[0] = instance_keypoint_coords[source_keypoint_id][0] + arr_fwd[int(source_keypoint_indices[0])][int(source_keypoint_indices[1])][edge];
                 displaced_point[1] = instance_keypoint_coords[source_keypoint_id][1] + arr_fwd[int(source_keypoint_indices[0])][int(source_keypoint_indices[1])][edge+NUM_CHAIN];
 
@@ -911,12 +860,9 @@ int postprocess(VideoWriter video)
                 else if(displaced_point_indices[0] > (arr_size - 1)) displaced_point_indices[0] = arr_size - 1;
                 if(displaced_point_indices[1] < 0) displaced_point_indices[1] = 0;
                 else if(displaced_point_indices[1] > (arr_size - 1)) displaced_point_indices[1] = arr_size - 1;
-                //printf("displaced_point_indices: [%f %f] \n",  displaced_point_indices[0],displaced_point_indices[1]);
                 score = arr_heatmap[int(displaced_point_indices[0])][int(displaced_point_indices[1])][target_keypoint_id];
                 image_coord[0] = displaced_point_indices[0] * float(stride) + arr_offset[int(displaced_point_indices[0])][int(displaced_point_indices[1])][target_keypoint_id]; 
                 image_coord[1] = displaced_point_indices[1] * float(stride) + arr_offset[int(displaced_point_indices[0])][int(displaced_point_indices[1])][target_keypoint_id + NUM_KEYPOINTS];
-                //printf("score: %f\n",  score);
-                //printf("image_coord: [%f %f] \n",  image_coord[0],image_coord[1]);
                 instance_keypoint_scores[target_keypoint_id] = score;
                 instance_keypoint_coords[target_keypoint_id][0] = image_coord[0];
                 instance_keypoint_coords[target_keypoint_id][1] = image_coord[1];
@@ -979,20 +925,21 @@ int postprocess(VideoWriter video)
         if(pose_count >= MAX_POSE_DETECTIONS) break;
     }
     
-#if PRINT_POSE_RESULT == true
-    //disable print result in case run real time with camera
-    for(int pose_id=0; pose_id < pose_count; pose_id++)
+    if(print_poses_score == 1)
     {
-        if(pose_scores[pose_id] == 0) break;
-        printf("\nPose %d, score = %f \n",  pose_id,pose_scores[pose_id]);
-        for(int keypoint_id = 0; keypoint_id < NUM_KEYPOINTS; keypoint_id++)
+        //disable print result in case run real time with camera
+        for(int pose_id=0; pose_id < pose_count; pose_id++)
         {
-            printf(" Keypoint = %s \n",  label_file_map[keypoint_id].c_str());
-            printf("score = %f, coord = [%f %f]\n",  pose_keypoint_scores[pose_id][keypoint_id], pose_keypoint_coords[pose_id][keypoint_id][0]*scale, pose_keypoint_coords[pose_id][keypoint_id][1]*scale);
+            if(pose_scores[pose_id] == 0) break;
+            printf("\nPose %d, score = %f \n",  pose_id,pose_scores[pose_id]);
+            for(int keypoint_id = 0; keypoint_id < NUM_KEYPOINTS; keypoint_id++)
+            {
+                printf(" Keypoint = %s \n",  label_file_map[keypoint_id].c_str());
+                printf("score = %f, coord = [%f %f]\n",  pose_keypoint_scores[pose_id][keypoint_id], pose_keypoint_coords[pose_id][keypoint_id][0]*scale, pose_keypoint_coords[pose_id][keypoint_id][1]*scale);
+            }
         }
     }
-#endif
-    //printf("finish calculate poses\n");
+
     for(int pose_id=0; pose_id < pose_count; pose_id++)
     {
         for(int keypoint_id = 0; keypoint_id < NUM_KEYPOINTS; keypoint_id++)
@@ -1071,17 +1018,12 @@ int postprocess(VideoWriter video)
         }
     }
     
-    //printf("start video.write\n");
     video.write(camera_frame);
-    //printf("finish video.write\n");
-    //cv::imwrite("output/camera_frame.jpg", camera_frame);
 
     return ret;
 }
 
 void run_model(){
-    // RUN: score model & input tensor, get back output tensor
-    //gettimeofday(&time1, nullptr);
     std::vector<OrtValue *> output_tensor(4);
     output_tensor[0] = NULL;
     output_tensor[1] = NULL;
@@ -1111,7 +1053,10 @@ int main(int argc, char* argv[])
         return ret;
     }
 
-    prepare_environment();
+    if(ret = prepare_environment()){
+        return ret;
+    }
+    
 
     struct timeval time1, time2, time3, time4;
     double duration;
@@ -1148,18 +1093,19 @@ int main(int argc, char* argv[])
         postprocess(video);
         gettimeofday(&time4, nullptr);
 
-        #if MEASURE_TIME == true
-        duration = timedifference_msec(time1,time2);
-        printf("preprocessing Time: %.3f msec\n", duration);
-        duration = timedifference_msec(time2,time3);
-        printf("run model Time: %.3f msec\n", duration);
-        duration = timedifference_msec(time3,time4);
-        printf("postprocessing Time: %.3f msec\n", duration);
-        duration = timedifference_msec(time1,time4);
-        printf("total time of 1 fram processing: %.3f msec\n", duration);
-        printf("number of frame per second: %.3f fps\n", 1000/duration);
-        printf("\n");
-        #endif
+        if(measure_time == 1)
+        {
+            duration = timedifference_msec(time1,time2);
+            printf("preprocessing Time: %.3f msec\n", duration);
+            duration = timedifference_msec(time2,time3);
+            printf("run model Time: %.3f msec\n", duration);
+            duration = timedifference_msec(time3,time4);
+            printf("postprocessing Time: %.3f msec\n", duration);
+            duration = timedifference_msec(time1,time4);
+            printf("total time of 1 fram processing: %.3f msec\n", duration);
+            printf("number of frame per second: %.3f fps\n", 1000/duration);
+            printf("\n");
+        }
 
     }
     // When everything done, release the video capture and write object
