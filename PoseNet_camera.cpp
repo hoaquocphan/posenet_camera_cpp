@@ -194,9 +194,9 @@ int help()
     printf("        <model index>  can be 1 or 2 or 3, default is 2 \n");
     printf("    Camera index for posenet: -cam_index <cam_index> \n");
     printf("        <cam_index>  is index of device name camera: /dev/video<cam_index>  \n");
-    printf("    Input image size for posenet: -measure_time <measure_time> \n");
+    printf("    Measure time of processing: -measure_time <measure_time> \n");
     printf("        <measure_time>  to enable/disable the measure time function. 0 for disable, 1 for enable \n");
-    printf("    Input image size for posenet: -print_poses_score <print_poses_score> \n");
+    printf("    Print poses score for image: -print_poses_score <print_poses_score> \n");
     printf("        <print_poses_score>  to enable/disable the print pose score function. 0 for disable, 1 for enable \n");
     printf("Example command: ./poseNet_camera -model mobilenet -model_index 2 -cam_index 8 -measure_time 0 -print_poses_score 0\n");
     printf("\n");
