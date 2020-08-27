@@ -1,18 +1,12 @@
-WORK=/data2/hoaphan/onnxruntime2/
-SDK_ONNX=/data2/hoaphan/onnxruntime2/sdk/sysroots/
 
 onnxruntime: PoseNet_camera.cpp
 	${CXX} -std=c++14 PoseNet_camera.cpp \
 	-DONNX_ML \
-	-I ${WORK}posenet/ \
-	-I ${WORK}build/tmp/sysroots-components/aarch64/opencv/usr/include/ \
-	-L ${WORK}build/tmp/sysroots-components/aarch64/tbb/usr/lib64/ \
-	-L ${WORK}build/tmp/sysroots-components/aarch64/tiff/usr/lib64/ \
-	-L ${SDK_ONNX}aarch64-poky-linux/usr/lib64/ \
-	-L ${SDK_ONNX}aarch64-poky-linux/usr/lib64/onnx/ \
-	-L ${SDK_ONNX}aarch64-poky-linux/usr/lib64/external/protobuf/cmake/ \
-	-L ${SDK_ONNX}aarch64-poky-linux/usr/lib64/external/re2/ \
-	-L ${WORK}build/tmp/sysroots-components/aarch64/opencv/usr/lib64/ \
+	-I ${PWD} \
+	-L ${SDKTARGETSYSROOT}/usr/lib64/ \
+	-L ${SDKTARGETSYSROOT}/usr/lib64/onnx/ \
+	-L ${SDKTARGETSYSROOT}/usr/lib64/external/protobuf/cmake/ \
+	-L ${SDKTARGETSYSROOT}/usr/lib64/external/re2/ \
 	-lonnxruntime_session \
 	-lonnxruntime_providers \
 	-lautoml_featurizers \
