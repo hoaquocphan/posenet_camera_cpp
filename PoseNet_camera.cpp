@@ -49,14 +49,11 @@ using namespace std;
 #define MOBILENET_str "mobilenet"
 #define NUM_KEYPOINTS 17
 #define NUM_CHAIN 16
+#define DISABLE 0
+#define ENABLE 1
 #define LOCAL_MAXIMUM_RADIUS 1
 #define MAX_POSE_DETECTIONS 10
 #define MIN_POSE_SCORE 0.25
-#define MODEL_01 1   // this model has input shape (1, 3, 129, 129)
-#define MODEL_02 2   // this model has input shape (1, 3, 257, 257)
-#define MODEL_03 3   // this model has input shape (1, 3, 513, 513)
-#define DISABLE 0
-#define ENABLE 1
 
 /*****************************************
 * Global Variables
@@ -68,7 +65,7 @@ char image_size[10];
 float score_threshold = 0.5;
 std::map<int,std::string> label_file_map;
 std::map<int,std::string> label_chain_map;
-int input_image_size = 257;
+int process_image_size = 257;
 int tget_wid;
 int tget_hei;
 int image_size_x;
@@ -76,11 +73,11 @@ int image_size_y;
 int stride = 16; // default stride is 16
 int cam_index = 8; //device name of  camera is /dev/video<cam_index>
 int arr_size;
-int model_index = 2;
 int headmap_id,offset_id,bwd_id,fwd_id;
 const char* mat_out = "mat_out.jpg";
 std::string part_names_file("part_names.txt");
 std::string chain_names_file("chain_names.txt");
+std::string onnx_model_path;
 // ONNX Runtime variables
 OrtEnv* env;
 OrtSession* session;
@@ -190,15 +187,18 @@ int help()
     printf("To run posenet app, Please add below input arguments: \n");
     printf("    Model for posenet: -model <model name> \n");
     printf("        <model name> can be mobilenet or resnet50, default is mobilenet \n");
-    printf("    Model index for posenet: -model_index <model index> \n");
-    printf("        <model index>  can be 1 or 2 or 3, default is 2 \n");
     printf("    Camera index for posenet: -cam_index <cam_index> \n");
     printf("        <cam_index>  is index of device name camera: /dev/video<cam_index>  \n");
     printf("    Measure time of processing: -measure_time <measure_time> \n");
     printf("        <measure_time>  to enable/disable the measure time function. 0 for disable, 1 for enable \n");
     printf("    Print poses score for image: -print_poses_score <print_poses_score> \n");
     printf("        <print_poses_score>  to enable/disable the print pose score function. 0 for disable, 1 for enable \n");
-    printf("Example command: ./poseNet_camera -model mobilenet -model_index 2 -cam_index 8 -measure_time 0 -print_poses_score 0\n");
+    printf("    Stride of model: -stride <stride> \n");
+    printf("        <stride>  can be 8 or 16 or 32. default is 16 \n");
+    printf("    Process image size of model: -size <size> \n");
+    printf("        <size>  can be 129 or 257 or 513 for mobilenet, free size for resnet \n");
+    printf("Example command to run mobilenet: ./poseNet_camera -model mobilenet -cam_index 8 -measure_time 0 -print_poses_score 0 -stride 16 -size 129\n");
+    printf("Example command to run resnet: ./poseNet_camera -model resnet50 -cam_index 8 -measure_time 0 -print_poses_score 0 -stride 32 -size 225\n");
     printf("\n");
 
     return ret;
@@ -213,16 +213,23 @@ int print_info()
 {   
     int ret = 0;
     printf("\n");
-    printf("There are 3 model of mobilenet: \n");
+    printf("There are 4 models: \n");
     printf("Model 1:\n");
+    printf("    image classification model: mobilenet \n");
     printf("    stride: 16 \n");
     printf("    input image size: 129x129 \n");
     printf("Model 2:\n");
+    printf("    image classification model: mobilenet \n");
     printf("    stride: 16 \n");
     printf("    input image size: 257x257 \n");
     printf("Model 3:\n");
+    printf("    image classification model: mobilenet \n");
     printf("    stride: 16 \n");
     printf("    input image size: 513x513 \n");
+    printf("Model 4:\n");
+    printf("    image classification model: resnet \n");
+    printf("    stride: 32 \n");
+    printf("    input image size: free size (225x225 is recommended) \n");
     printf("\n");
 
     return ret;
@@ -247,28 +254,29 @@ int parse_argument(int argc, char* argv[])
         printf("\n");
         return 1;
     }
-	for (index = 1; index < argc; index++) {
-		if (!strcmp("-model", argv[index])) {
-			model_name = argv[index+1];
-		} else if (!strcmp("-model_index", argv[index])) {
-			model_index = atoi(argv[index+1]);
-		} else if (!strcmp("-cam_index", argv[index])) {
-			cam_index = atoi(argv[index+1]);
-		} else if (!strcmp("-measure_time", argv[index])) {
-			measure_time = atoi(argv[index+1]);
-		} else if (!strcmp("-print_poses_score", argv[index])) {
-			print_poses_score = atoi(argv[index+1]);
-		} else if (!strcmp("-h", argv[index])) {
+	for (index = 1; index < argc; index++) 
+    {
+        if (!strcmp("-model", argv[index])) { model_name = argv[index+1];}
+        else if (!strcmp("-cam_index", argv[index])) { cam_index = atoi(argv[index+1]);}
+        else if (!strcmp("-measure_time", argv[index])) { measure_time = atoi(argv[index+1]);} 
+        else if (!strcmp("-print_poses_score", argv[index])) { print_poses_score = atoi(argv[index+1]);} 
+        else if (!strcmp("-stride", argv[index])) {	stride = atoi(argv[index+1]);}  
+        else if (!strcmp("-size", argv[index])) { process_image_size = atoi(argv[index+1]);}
+        else if (!strcmp("-h", argv[index])) 
+        {
 			help();
             return 1;
-		} else if (!strcmp("-a", argv[index])) {
+		} else if (!strcmp("-a", argv[index])) 
+        {
 			print_info();
             return 1;
-        } else {
+        }
+        else {
         }
     }
     return ret;
 }
+
 
 int prepare_environment()
 {
@@ -277,30 +285,35 @@ int prepare_environment()
     // process some input argument
     if (!strcmp(model_name.c_str(), RESNET_str)) {
         model = RESNET50;
-        printf("Currently, posenet app doesn't support Resnet architecture\n");
-        return 1;
+        if(stride == 32)
+        {
+            stride_name = "_stride32";
+        }
+        else
+        {
+            printf("Currently, The Resnet model doesn't support stride %d\n", stride);
+            ret = -1;
+        }
+        onnx_model_path = "./models/" + model_name + stride_name + ".onnx";
     }
     else if (!strcmp(model_name.c_str(), MOBILENET_str)) {
         model = MOBILENET;
-        switch(model_index)
+        if(stride == 16)
         {
-            case MODEL_01:
-                stride = 16;
-                input_image_size = 129;
-            break;
-            case MODEL_02:
-                stride = 16;
-                input_image_size = 257;
-            break;
-            case MODEL_03:
-                stride = 16;
-                input_image_size = 513;
-            break;
-            default:
-                printf("Currently, posenet app doesn't support model %d\n",model_index);
-                return 1;
-            break;
+            stride_name = "_stride16";
         }
+        else
+        {
+            printf("Currently, The mobilenet model doesn't support stride %d\n", stride);
+            ret = -1;
+        }
+        sprintf(image_size,"%d",process_image_size);
+        if((process_image_size != 129) && (process_image_size != 257) && (process_image_size != 513))
+        {
+            printf("Currently, The mobilenet model doesn't support process_image_size %d\n", process_image_size);
+            ret = -1;
+        }
+        onnx_model_path = "./models/" + model_name + stride_name + "_imagesize" + image_size + ".onnx";
     }
     else {
         printf("The architecture is not supported\n");
@@ -317,15 +330,9 @@ int prepare_environment()
         printf("Wrong input of print_poses_score\n");
         return 1;
     }
-    
-    if(stride == 16) stride_name = "_stride16";
-    else if(stride == 8) stride_name = "_stride8";
-    else if(stride == 32) stride_name = "_stride32";
 
-    sprintf(image_size,"%d",input_image_size);
-
-    tget_hei = input_image_size;
-    tget_wid = input_image_size;
+    tget_hei = process_image_size;
+    tget_wid = process_image_size;
 
     DIR* dir = opendir("output");
     if (!dir) ret =mkdir("output", 0777);
@@ -348,10 +355,6 @@ void prepare_ONNX_Runtime() {
     CheckStatus(g_ort->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "test", &env));
     g_ort->CreateSessionOptions(&session_options);
     g_ort->SetInterOpNumThreads(session_options, 2); //Multi-core
-
-    //Config : model
-    std::string onnx_model_name = model_name + stride_name + "_imagesize" + image_size + ".onnx";
-    std::string onnx_model_path = "./models/" + onnx_model_name;
 
     //ONNX runtime load model
     CheckStatus(g_ort->CreateSession(env, onnx_model_path.c_str(), session_options, &session));
@@ -402,9 +405,9 @@ int preprocess_input(VideoCapture cap) {
     {
         float image_net_mean[3] = {-123.15, -115.90, -103.06 };
         int offs = 0;
-        for (int c = 0; c < img_channels; c++){
-            for (int y = 0; y < img_sizey; y++){
-                for (int x = 0; x < img_sizex; x++, offs++){
+        for (int y = 0; y < img_sizey; y++){
+            for (int x = 0; x < img_sizex; x++){
+                for (int c = 0; c < img_channels; c++, offs++){
                     const int val(imgPixels[y * img_sizex + x].RGBA[c]);
                     input_tensor_values[offs] = (float)val + image_net_mean[c]; // for resnet
                 }
@@ -561,94 +564,142 @@ int postprocess(VideoWriter video)
 
     float scale = float(camera_frame.cols) / float(tget_wid);
     
+    if(model == MOBILENET)
+    {
+        for (int a = 0; a < NUM_KEYPOINTS; a++)
+        {
+            for (int b = 0; b < arr_size; b++)
+            {
+                for (int c = 0; c < arr_size; c++,out_data_index++)
+                {
+                    arr_heatmap_temp[a][b][c] = sigmoid(out_data[headmap_id][out_data_index]);
+                }
+            }
+        }
+        //transpose
+        for (int a = 0; a < arr_size; a++)
+        {
+            for (int b = 0; b < arr_size; b++)
+            {
+                for (int c = 0; c < NUM_KEYPOINTS; c++)
+                {
+                    arr_heatmap[a][b][c] =  arr_heatmap_temp[c][a][b];
+                }
+            }
+        }
 
-    for (int a = 0; a < NUM_KEYPOINTS; a++)
-    {
-        for (int b = 0; b < arr_size; b++)
+        out_data_index=0;
+        for (int a = 0; a < NUM_KEYPOINTS*2; a++)
         {
-            for (int c = 0; c < arr_size; c++,out_data_index++)
+            for (int b = 0; b < arr_size; b++)
             {
-                arr_heatmap_temp[a][b][c] = sigmoid(out_data[headmap_id][out_data_index]);
+                for (int c = 0; c < arr_size; c++,out_data_index++)
+                {
+                    arr_offset_temp[a][b][c] = out_data[offset_id][out_data_index];
+                }
             }
         }
-    }
-    //transpose
-    for (int a = 0; a < arr_size; a++)
-    {
-        for (int b = 0; b < arr_size; b++)
+        //transpose
+        for (int a = 0; a < arr_size; a++)
         {
-            for (int c = 0; c < NUM_KEYPOINTS; c++)
+            for (int b = 0; b < arr_size; b++)
             {
-                arr_heatmap[a][b][c] =  arr_heatmap_temp[c][a][b];
+                for (int c = 0; c < NUM_KEYPOINTS*2; c++)
+                {
+                    arr_offset[a][b][c] =  arr_offset_temp[c][a][b];
+                }
             }
         }
-    }
 
-    out_data_index=0;
-    for (int a = 0; a < NUM_KEYPOINTS*2; a++)
-    {
-        for (int b = 0; b < arr_size; b++)
+        out_data_index=0;
+        for (int a = 0; a < NUM_CHAIN*2; a++)
         {
-            for (int c = 0; c < arr_size; c++,out_data_index++)
+            for (int b = 0; b < arr_size; b++)
             {
-                arr_offset_temp[a][b][c] = out_data[offset_id][out_data_index];
+                for (int c = 0; c < arr_size; c++,out_data_index++)
+                {
+                    arr_fwd_temp[a][b][c] = out_data[fwd_id][out_data_index];
+                }
             }
         }
-    }
-    //transpose
-    for (int a = 0; a < arr_size; a++)
-    {
-        for (int b = 0; b < arr_size; b++)
+        //transpose
+        for (int a = 0; a < arr_size; a++)
         {
-            for (int c = 0; c < NUM_KEYPOINTS*2; c++)
+            for (int b = 0; b < arr_size; b++)
             {
-                arr_offset[a][b][c] =  arr_offset_temp[c][a][b];
+                for (int c = 0; c < NUM_CHAIN*2; c++)
+                {
+                    arr_fwd[a][b][c] =  arr_fwd_temp[c][a][b];
+                }
             }
         }
-    }
 
-    out_data_index=0;
-    for (int a = 0; a < NUM_CHAIN*2; a++)
-    {
-        for (int b = 0; b < arr_size; b++)
+        out_data_index=0;
+        for (int a = 0; a < NUM_CHAIN*2; a++)
         {
-            for (int c = 0; c < arr_size; c++,out_data_index++)
+            for (int b = 0; b < arr_size; b++)
             {
-                arr_fwd_temp[a][b][c] = out_data[fwd_id][out_data_index];
+                for (int c = 0; c < arr_size; c++,out_data_index++)
+                {
+                    arr_bwd_temp[a][b][c] = out_data[bwd_id][out_data_index];
+                }
+            }
+        }
+        //transpose
+        for (int a = 0; a < arr_size; a++)
+        {
+            for (int b = 0; b < arr_size; b++)
+            {
+                for (int c = 0; c < NUM_CHAIN*2; c++)
+                {
+                    arr_bwd[a][b][c] =  arr_bwd_temp[c][a][b];
+                }
             }
         }
     }
-    //transpose
-    for (int a = 0; a < arr_size; a++)
+    else if(model == RESNET50)
     {
-        for (int b = 0; b < arr_size; b++)
+        for (int a = 0; a < arr_size; a++)
         {
-            for (int c = 0; c < NUM_CHAIN*2; c++)
+            for (int b = 0; b < arr_size; b++)
             {
-                arr_fwd[a][b][c] =  arr_fwd_temp[c][a][b];
+                for (int c = 0; c < NUM_KEYPOINTS; c++,out_data_index++)
+                {
+                    arr_heatmap[a][b][c] = sigmoid(out_data[headmap_id][out_data_index]);
+                }
             }
         }
-    }
-
-    out_data_index=0;
-    for (int a = 0; a < NUM_CHAIN*2; a++)
-    {
-        for (int b = 0; b < arr_size; b++)
+        out_data_index=0;
+        for (int a = 0; a < arr_size; a++)
         {
-            for (int c = 0; c < arr_size; c++,out_data_index++)
+            for (int b = 0; b < arr_size; b++)
             {
-                arr_bwd_temp[a][b][c] = out_data[bwd_id][out_data_index];
+                for (int c = 0; c < NUM_KEYPOINTS*2; c++,out_data_index++)
+                {
+                    arr_offset[a][b][c] = out_data[offset_id][out_data_index];
+                }
             }
         }
-    }
-    //transpose
-    for (int a = 0; a < arr_size; a++)
-    {
-        for (int b = 0; b < arr_size; b++)
+        out_data_index=0;
+        for (int a = 0; a < arr_size; a++)
         {
-            for (int c = 0; c < NUM_CHAIN*2; c++)
+            for (int b = 0; b < arr_size; b++)
             {
-                arr_bwd[a][b][c] =  arr_bwd_temp[c][a][b];
+                for (int c = 0; c < NUM_CHAIN*2; c++,out_data_index++)
+                {
+                    arr_fwd[a][b][c] = out_data[fwd_id][out_data_index];
+                }
+            }
+        }
+        out_data_index=0;
+        for (int a = 0; a < arr_size; a++)
+        {
+            for (int b = 0; b < arr_size; b++)
+            {
+                for (int c = 0; c < NUM_CHAIN*2; c++,out_data_index++)
+                {
+                    arr_bwd[a][b][c] = out_data[bwd_id][out_data_index];
+                }
             }
         }
     }
